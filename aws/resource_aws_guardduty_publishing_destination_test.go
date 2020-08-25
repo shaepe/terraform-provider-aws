@@ -3,15 +3,14 @@ package aws
 import (
 	"fmt"
 	"log"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/guardduty"
 	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-sdk/helper/acctest"
-	"github.com/hashicorp/terraform-plugin-sdk/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/terraform"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
 
 func init() {
@@ -81,7 +80,10 @@ func testSweepGuarddutyPublishingDestinations(region string) error {
 
 func TestAccAwsGuardDutyPublishingDestination_basic(t *testing.T) {
 	resourceName := "aws_guardduty_publishing_destination.test"
-	bucketName := fmt.Sprintf("tf-test-%s", acctest.RandString(5))
+	bucketName := acctest.RandomWithPrefix("tf-acc-test")
+	detectorResourceName := "aws_guardduty_detector.test_gd"
+	bucketResourceName := "aws_s3_bucket.gd_bucket"
+	kmsKeyResourceName := "aws_kms_key.gd_key"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -92,9 +94,9 @@ func TestAccAwsGuardDutyPublishingDestination_basic(t *testing.T) {
 				Config: testAccAwsGuardDutyPublishingDestinationConfig_basic(bucketName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAwsGuardDutyPublishingDestinationExists(resourceName),
-					resource.TestCheckResourceAttrSet(resourceName, "detector_id"),
-					resource.TestCheckResourceAttrSet(resourceName, "destination_arn"),
-					resource.TestCheckResourceAttrSet(resourceName, "kms_key_arn"),
+					resource.TestCheckResourceAttrPair(resourceName, "detector_id", detectorResourceName, "id"),
+					resource.TestCheckResourceAttrPair(resourceName, "destination_arn", bucketResourceName, "arn"),
+					resource.TestCheckResourceAttrPair(resourceName, "kms_key_arn", kmsKeyResourceName, "arn"),
 					resource.TestCheckResourceAttr(resourceName, "destination_type", "S3")),
 			},
 			{
@@ -106,7 +108,29 @@ func TestAccAwsGuardDutyPublishingDestination_basic(t *testing.T) {
 	})
 }
 
-const testAccGuardDutyPublishingDestinationConfig_basic1 = `
+func TestAccAwsGuardDutyPublishingDestination_disappears(t *testing.T) {
+	resourceName := "aws_guardduty_publishing_destination.test"
+	bucketName := acctest.RandomWithPrefix("tf-acc-test")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAwsGuardDutyPublishingDestinationDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccAwsGuardDutyPublishingDestinationConfig_basic(bucketName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAwsGuardDutyPublishingDestinationExists(resourceName),
+					testAccCheckResourceDisappears(testAccProvider, resourceAwsGuardDutyPublishingDestination(), resourceName),
+				),
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+func testAccAwsGuardDutyPublishingDestinationConfig_basic(bucketName string) string {
+	return fmt.Sprintf(`
 
 data "aws_caller_identity" "current" {}
 
@@ -136,7 +160,7 @@ data "aws_iam_policy_document" "bucket_pol" {
     ]
 
     resources = [
-      "${aws_s3_bucket.gd_bucket.arn}"
+      aws_s3_bucket.gd_bucket.arn
     ]
 
     principals {
@@ -187,7 +211,7 @@ resource "aws_guardduty_detector" "test_gd" {
 }
 
 resource "aws_s3_bucket" "gd_bucket" {
-  bucket = "<<BUCKET_NAME>>"
+  bucket = %[1]q
   acl    = "private"
   force_destroy = true
 }
@@ -201,22 +225,17 @@ resource "aws_kms_key" "gd_key" {
   description = "Temporary key for AccTest of TF"
   deletion_window_in_days = 7
   policy = data.aws_iam_policy_document.kms_pol.json
-}`
+}
 
-func testAccAwsGuardDutyPublishingDestinationConfig_basic(bucketName string) string {
-	return fmt.Sprintf(`
-	%[1]s
+resource "aws_guardduty_publishing_destination" "test" {
+	detector_id = aws_guardduty_detector.test_gd.id
+	destination_arn = aws_s3_bucket.gd_bucket.arn
+	kms_key_arn = aws_kms_key.gd_key.arn
 	
-	resource "aws_guardduty_publishing_destination" "test" {
-		detector_id = aws_guardduty_detector.test_gd.id
-		destination_arn = aws_s3_bucket.gd_bucket.arn
-		kms_key_arn = aws_kms_key.gd_key.arn
-	  
-		depends_on = [
-		  aws_s3_bucket_policy.gd_bucket_policy,
-		]
-	  }
-	`, strings.Replace(testAccGuardDutyPublishingDestinationConfig_basic1, "<<BUCKET_NAME>>", bucketName, 1))
+	depends_on = [
+		aws_s3_bucket_policy.gd_bucket_policy,
+	]
+}`, bucketName)
 }
 
 func testAccCheckAwsGuardDutyPublishingDestinationExists(name string) resource.TestCheckFunc {

@@ -4,17 +4,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/guardduty"
-	"github.com/hashicorp/terraform-plugin-sdk/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
-)
-
-// Constants not currently provided by the AWS Go SDK
-const (
-	guardDutyPublishingStatusFailed = "FAILED"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/terraform-providers/terraform-provider-aws/aws/internal/service/guardduty/waiter"
 )
 
 func resourceAwsGuardDutyPublishingDestination() *schema.Resource {
@@ -38,6 +33,9 @@ func resourceAwsGuardDutyPublishingDestination() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Default:  guardduty.DestinationTypeS3,
+				ValidateFunc: validation.StringInSlice([]string{
+					guardduty.DestinationTypeS3,
+				}, false),
 			},
 			"destination_arn": {
 				Type:         schema.TypeString,
@@ -69,40 +67,19 @@ func resourceAwsGuardDutyPublishingDestinationCreate(d *schema.ResourceData, met
 	log.Printf("[DEBUG] Creating GuardDuty publishing destination: %s", input)
 	output, err := conn.CreatePublishingDestination(&input)
 	if err != nil {
-		return fmt.Errorf("Creating GuardDuty publishing destination failed: %s", err.Error())
+		return fmt.Errorf("Creating GuardDuty publishing destination failed: %w", err)
 	}
 
-	stateConf := &resource.StateChangeConf{
-		Pending:    []string{guardduty.PublishingStatusPendingVerification},
-		Target:     []string{guardduty.PublishingStatusPublishing},
-		Refresh:    guardDutyPublishingDestinationRefreshStatusFunc(conn, *output.DestinationId, detectorID),
-		Timeout:    5 * time.Minute,
-		MinTimeout: 3 * time.Second,
-	}
+	_, err = waiter.PublishingDestinationCreated(conn, *output.DestinationId, detectorID)
 
-	_, err = stateConf.WaitForState()
 	if err != nil {
-		return fmt.Errorf("Error waiting for GuardDuty PublishingDestination status to be \"%s\": %s",
+		return fmt.Errorf("Error waiting for GuardDuty PublishingDestination status to be \"%s\": %w",
 			guardduty.PublishingStatusPublishing, err)
 	}
 
-	d.SetId(fmt.Sprintf("%s:%s", d.Get("detector_id"), *output.DestinationId))
+	d.SetId(fmt.Sprintf("%s:%s", d.Get("detector_id"), aws.StringValue(output.DestinationId)))
 
 	return resourceAwsGuardDutyPublishingDestinationRead(d, meta)
-}
-
-func guardDutyPublishingDestinationRefreshStatusFunc(conn *guardduty.GuardDuty, destinationID, detectorID string) resource.StateRefreshFunc {
-	return func() (interface{}, string, error) {
-		input := &guardduty.DescribePublishingDestinationInput{
-			DetectorId:    aws.String(detectorID),
-			DestinationId: aws.String(destinationID),
-		}
-		resp, err := conn.DescribePublishingDestination(input)
-		if err != nil {
-			return nil, guardDutyPublishingStatusFailed, err
-		}
-		return resp, *resp.Status, nil
-	}
 }
 
 func resourceAwsGuardDutyPublishingDestinationRead(d *schema.ResourceData, meta interface{}) error {
@@ -122,19 +99,18 @@ func resourceAwsGuardDutyPublishingDestinationRead(d *schema.ResourceData, meta 
 	log.Printf("[DEBUG] Reading GuardDuty publishing destination: %s", input)
 	gdo, err := conn.DescribePublishingDestination(input)
 	if err != nil {
-		if isAWSErr(err, guardduty.ErrCodeBadRequestException, "The request is rejected because the input detectorId is not owned by the current account.") {
+		if isAWSErr(err, guardduty.ErrCodeBadRequestException, "The request is rejected because the one or more input parameters have invalid values.") {
 			log.Printf("[WARN] GuardDuty publishing destination: %q not found, removing from state", d.Id())
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("Reading GuardDuty publishing destination: '%s' failed: %s", d.Id(), err.Error())
+		return fmt.Errorf("Reading GuardDuty publishing destination: '%s' failed: %w", d.Id(), err)
 	}
 
 	d.Set("detector_id", detectorId)
 	d.Set("destination_type", gdo.DestinationType)
 	d.Set("kms_key_arn", gdo.DestinationProperties.KmsKeyArn)
 	d.Set("destination_arn", gdo.DestinationProperties.DestinationArn)
-	d.Set("status", gdo.Status)
 	return nil
 }
 
@@ -159,7 +135,7 @@ func resourceAwsGuardDutyPublishingDestinationUpdate(d *schema.ResourceData, met
 	log.Printf("[DEBUG] Update GuardDuty publishing destination: %s", input)
 	_, err := conn.UpdatePublishingDestination(&input)
 	if err != nil {
-		return fmt.Errorf("Updating GuardDuty publishing destination '%s' failed: %s", d.Id(), err.Error())
+		return fmt.Errorf("Updating GuardDuty publishing destination '%s' failed: %w", d.Id(), err)
 	}
 
 	return resourceAwsGuardDutyPublishingDestinationRead(d, meta)
@@ -187,7 +163,7 @@ func resourceAwsGuardDutyPublishingDestinationDelete(d *schema.ResourceData, met
 	}
 
 	if err != nil {
-		return fmt.Errorf("Deleting GuardDuty publishing destination '%s' failed: %s", d.Id(), err.Error())
+		return fmt.Errorf("Deleting GuardDuty publishing destination '%s' failed: %w", d.Id(), err)
 	}
 
 	return nil

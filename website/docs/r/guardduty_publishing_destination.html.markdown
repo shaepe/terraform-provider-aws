@@ -40,7 +40,7 @@ data "aws_iam_policy_document" "bucket_pol" {
     ]
 
     resources = [
-      "${aws_s3_bucket.gd_bucket.arn}"
+      aws_s3_bucket.gd_bucket.arn
     ]
 
     principals {
@@ -91,7 +91,7 @@ resource "aws_guardduty_detector" "test_gd" {
 }
 
 resource "aws_s3_bucket" "gd_bucket" {
-  bucket        = "<<BUCKET_NAME>>"
+  bucket        = "example"
   acl           = "private"
   force_destroy = true
 }
@@ -137,7 +137,6 @@ The following arguments are supported:
 In addition to all arguments above, the following attributes are exported:
 
 * `id` - The ID of the GuardDuty PublishingDestination and the detector ID. Format: `<DetectorID>:<PublishingDestinationID>`
-* `status` - The state of the PublishingDestination. See here for possible values. A working destination will have "PUBLISHING".
 
 ## Import
 
